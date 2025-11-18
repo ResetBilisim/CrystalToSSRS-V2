@@ -227,8 +227,8 @@ Bu proje şahsi ve ticari kullanım için ücretsizdir.
 
 ## 👤 İletişim
 
-Proje geliştirici: [İsminiz]
-Email: [email@example.com]
+Proje geliştirici: Recep Şahin
+Email: receptive61@gmail.com
 
 ## 🙏 Teşekkürler
 
@@ -238,4 +238,4 @@ Email: [email@example.com]
 
 ---
 
-**Not**: Bu araç Crystal Reports'tan SSRS'e geçiş sürecini kolaylaştırmak için tasarlanmıştır. Karmaşık raporlar için manuel kontrol ve düzeltme gerekebilir.
+**Not**: Bu araç IFS de kullanılan Crystal Reports'tan SSRS'e geçiş sürecini kolaylaştırmak için tasarlanmıştır. Karmaşık raporlar için manuel kontrol ve düzeltme gerekebilir.
