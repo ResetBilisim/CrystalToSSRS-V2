@@ -12,6 +12,7 @@ namespace CrystalToSSRS.Models
         public List<ReportFormula> Formulas { get; set; }
         public List<DatabaseTable> Tables { get; set; }
         public List<ReportField> Fields { get; set; }
+        public List<string> ParseErrors { get; set; }
         
         public CrystalReportModel()
         {
@@ -20,6 +21,7 @@ namespace CrystalToSSRS.Models
             Formulas = new List<ReportFormula>();
             Tables = new List<DatabaseTable>();
             Fields = new List<ReportField>();
+            ParseErrors = new List<string>();
         }
     }
     
@@ -56,7 +58,24 @@ namespace CrystalToSSRS.Models
         public double Height { get; set; }
         public string Text { get; set; }
         public FontInfo Font { get; set; }
-        public string DataSource { get; set; } // Field adı veya formula
+        public string DataSource { get; set; } // Field adı veya formula, resim yolu vb.
+        public StyleInfo Style { get; set; } // Görsel stil bilgileri
+        public string Format { get; set; }    // Sayı/tarih formatı
+        public bool Suppress { get; set; }    // Gizleme
+    }
+    
+    public class StyleInfo
+    {
+        public int? ForeColorArgb { get; set; }
+        public int? BackColorArgb { get; set; }
+        public int? BorderColorArgb { get; set; }
+        public float? BorderWidthPt { get; set; }
+        public string BorderStyle { get; set; } // Solid, Dashed, Dotted, None
+        public string TextAlign { get; set; }   // Left, Center, Right
+        public string VerticalAlign { get; set; } // Top, Middle, Bottom
+        public bool? CanGrow { get; set; }
+        public float? Rotation { get; set; } // 0, 90, 180, 270
+        public float? LineWidthPt { get; set; } // LineObject kalınlığı
     }
     
     public class FontInfo

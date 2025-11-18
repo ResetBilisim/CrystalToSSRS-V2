@@ -337,6 +337,14 @@ namespace CrystalToSSRS.UI
                 PopulateTreeView();
                 DrawDesignView();
                 
+                // Hata özeti
+                if (_currentModel.ParseErrors != null && _currentModel.ParseErrors.Count > 0)
+                {
+                    var msg = string.Join("\n", _currentModel.ParseErrors);
+                    MessageBox.Show("RPT okunurken bazı kayıtlar atlandı veya hata oluştu:\n\n" + msg,
+                        "Uyarı", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                
                 lblStatus.Text = $"Rapor yüklendi: {Path.GetFileName(filePath)}";
                 MessageBox.Show($"Rapor başarıyla yüklendi!\n\n" +
                     $"Sections: {_currentModel.Sections.Count}\n" +
@@ -363,6 +371,15 @@ namespace CrystalToSSRS.UI
             {
                 Tag = _currentModel
             };
+            
+            // Hatalar
+            if (_currentModel.ParseErrors != null && _currentModel.ParseErrors.Count > 0)
+            {
+                var errNode = new TreeNode($"Errors ({_currentModel.ParseErrors.Count})");
+                foreach (var err in _currentModel.ParseErrors)
+                    errNode.Nodes.Add(new TreeNode(err));
+                rootNode.Nodes.Add(errNode);
+            }
             
             // Connection Info
             var connNode = new TreeNode($"Oracle Connection: {_currentModel.ConnectionInfo.ServerName}")
@@ -535,42 +552,89 @@ namespace CrystalToSSRS.UI
             float y = (float)(obj.Top / 1440.0 * 96) + yOffset;
             float w = (float)(obj.Width / 1440.0 * 96);
             float h = (float)(obj.Height / 1440.0 * 96);
-            
+
+            if (obj.Suppress) return; // gizli ise çizme
             var rect = new RectangleF(x, y, w, h);
-            
+
+            // Stil renklerini hazırla
+            Color? back = null, fore = null, bcol = null;
+            if (obj.Style != null)
+            {
+                if (obj.Style.BackColorArgb.HasValue) back = Color.FromArgb(obj.Style.BackColorArgb.Value);
+                if (obj.Style.ForeColorArgb.HasValue) fore = Color.FromArgb(obj.Style.ForeColorArgb.Value);
+                if (obj.Style.BorderColorArgb.HasValue) bcol = Color.FromArgb(obj.Style.BorderColorArgb.Value);
+            }
+
+            // Varsayılanlar
+            var borderPen = new Pen(bcol ?? Color.Gray, (obj.Style?.BorderWidthPt ?? 1f) * 96f / 72f); // pt->px
+
             // Nesne tipine göre çiz
             if (obj.Type == "TextObject")
             {
-                g.FillRectangle(Brushes.LightYellow, rect);
-                g.DrawRectangle(Pens.Gray, Rectangle.Round(rect));
-                
+                using (var bg = new SolidBrush(back ?? Color.LightYellow))
+                    g.FillRectangle(bg, rect);
+                g.DrawRectangle(borderPen, Rectangle.Round(rect));
+
                 if (!string.IsNullOrEmpty(obj.Text))
                 {
-                    var font = obj.Font != null ? 
-                        new Font(obj.Font.Name, obj.Font.Size) : 
-                        new Font("Arial", 10);
-                    g.DrawString(obj.Text, font, Brushes.Black, rect);
+                    var font = obj.Font != null ? new Font(obj.Font.Name, obj.Font.Size, (obj.Font.Bold? FontStyle.Bold:FontStyle.Regular) | (obj.Font.Italic? FontStyle.Italic:0) | (obj.Font.Underline? FontStyle.Underline:0)) : new Font("Arial", 10);
+                    var fmt = new StringFormat();
+                    fmt.Alignment = ToAlignment(obj.Style?.TextAlign);
+                    fmt.LineAlignment = ToLineAlignment(obj.Style?.VerticalAlign);
+                    using (var fb = new SolidBrush(fore ?? Color.Black))
+                        g.DrawString(obj.Text, font, fb, rect, fmt);
                 }
             }
             else if (obj.Type == "FieldObject")
             {
-                g.FillRectangle(Brushes.LightBlue, rect);
-                g.DrawRectangle(Pens.Blue, Rectangle.Round(rect));
-                g.DrawString(obj.DataSource ?? obj.Name, new Font("Arial", 9), Brushes.DarkBlue, rect);
+                using (var bg = new SolidBrush(back ?? Color.LightBlue))
+                    g.FillRectangle(bg, rect);
+                g.DrawRectangle(borderPen, Rectangle.Round(rect));
+                var font = obj.Font != null ? new Font(obj.Font.Name, obj.Font.Size) : new Font("Arial", 9);
+                var fmt = new StringFormat();
+                fmt.Alignment = ToAlignment(obj.Style?.TextAlign);
+                fmt.LineAlignment = ToLineAlignment(obj.Style?.VerticalAlign);
+                using (var fb = new SolidBrush(fore ?? Color.DarkBlue))
+                    g.DrawString(obj.DataSource ?? obj.Name, font, fb, rect, fmt);
             }
             else if (obj.Type == "LineObject")
             {
-                g.DrawLine(Pens.Black, x, y, x + w, y + h);
+                // Line crystal ölçülerinde w/h doğrultusunda çiziliyor
+                g.DrawLine(new Pen(bcol ?? Color.Black, (obj.Style?.LineWidthPt ?? 1f) * 96f / 72f), x, y, x + w, y + h);
             }
             else
             {
-                g.DrawRectangle(Pens.DarkGray, Rectangle.Round(rect));
-                g.DrawString(obj.Type, new Font("Arial", 8), Brushes.Gray, rect);
+                using (var bg = new SolidBrush(back ?? Color.White))
+                    g.FillRectangle(bg, rect);
+                g.DrawRectangle(borderPen, Rectangle.Round(rect));
+                var font = new Font("Arial", 8);
+                using (var fb = new SolidBrush(fore ?? Color.Gray))
+                    g.DrawString(obj.Type, font, fb, rect);
             }
-            
-            // Boyut bilgisini göster
-            var sizeText = $"{w:F1}x{h:F1}px";
-            g.DrawString(sizeText, new Font("Arial", 7), Brushes.Red, x, y - 12);
+
+            // Boyut bilgisini göster (mm)
+            float mmW = w / 96f * 25.4f;
+            float mmH = h / 96f * 25.4f;
+            g.DrawString($"{mmW:F1}x{mmH:F1}mm", new Font("Arial", 7), Brushes.Red, x, y - 12);
+        }
+
+        private StringAlignment ToAlignment(string align)
+        {
+            switch ((align ?? "").ToLowerInvariant())
+            {
+                case "center": return StringAlignment.Center;
+                case "right": return StringAlignment.Far;
+                default: return StringAlignment.Near;
+            }
+        }
+        private StringAlignment ToLineAlignment(string valign)
+        {
+            switch ((valign ?? "").ToLowerInvariant())
+            {
+                case "middle": return StringAlignment.Center;
+                case "bottom": return StringAlignment.Far;
+                default: return StringAlignment.Near;
+            }
         }
         
         private void DrawGrid(Graphics g)

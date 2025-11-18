@@ -3,6 +3,7 @@ using CrystalDecisions.Shared;
 using CrystalToSSRS.Models;
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 
 namespace CrystalToSSRS.Converters
 {
@@ -33,6 +34,7 @@ namespace CrystalToSSRS.Converters
         {
             _report = new ReportDocument();
             
+            CrystalReportModel model = null;
             try
             {
                 // File exists check
@@ -44,7 +46,7 @@ namespace CrystalToSSRS.Converters
                 // Load with retry logic
                 LoadWithRetry(rptFilePath);
                 
-                var model = new CrystalReportModel
+                model = new CrystalReportModel
                 {
                     ReportName = System.IO.Path.GetFileNameWithoutExtension(rptFilePath)
                 };
@@ -53,7 +55,7 @@ namespace CrystalToSSRS.Converters
                 model.ConnectionInfo = ExtractOracleConnectionInfo();
                 
                 // Extract sections
-                model.Sections = ExtractSections();
+                model.Sections = ExtractSectionsSafe(model);
                 
                 // Extract parameters
                 model.Parameters = ExtractParameters();
@@ -69,8 +71,10 @@ namespace CrystalToSSRS.Converters
             }
             catch (Exception ex)
             {
+                if (model == null) model = new CrystalReportModel();
+                model.ParseErrors.Add($"Fatal: {ex.GetType().Name}: {ex.Message}");
                 Console.WriteLine($"Fatal error parsing report: {ex.Message}");
-                throw;
+                return model;
             }
             finally
             {
@@ -85,6 +89,54 @@ namespace CrystalToSSRS.Converters
                     catch { }
                 }
             }
+        }
+
+        private List<ReportSection> ExtractSectionsSafe(CrystalReportModel model)
+        {
+            var sections = new List<ReportSection>();
+            try
+            {
+                foreach (Section section in _report.ReportDefinition.Sections)
+                {
+                    var reportSection = new ReportSection
+                    {
+                        Name = section.Name ?? "Unknown",
+                        Kind = section.Kind.ToString(),
+                        Height = section.Height
+                    };
+
+                    try
+                    {
+                        foreach (CrystalDecisions.CrystalReports.Engine.ReportObject obj in section.ReportObjects)
+                        {
+                            try
+                            {
+                                var reportObj = ExtractReportObject(obj);
+                                if (reportObj != null)
+                                {
+                                    reportSection.Objects.Add(reportObj);
+                                }
+                            }
+                            catch (Exception exObj)
+                            {
+                                model.ParseErrors.Add($"Object '{obj?.Name}' in section '{section?.Name}': {exObj.Message}");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        model.ParseErrors.Add($"Section '{section?.Name}': {ex.Message}");
+                    }
+
+                    sections.Add(reportSection);
+                }
+            }
+            catch (Exception ex)
+            {
+                model.ParseErrors.Add($"Sections root: {ex.Message}");
+            }
+
+            return sections;
         }
         
         private void LoadWithRetry(string rptFilePath)
@@ -222,9 +274,24 @@ namespace CrystalToSSRS.Converters
                     Left = obj.Left,
                     Top = obj.Top,
                     Width = obj.Width,
-                    Height = obj.Height
+                    Height = obj.Height,
+                    Style = new StyleInfo()
                 };
                 
+                // Common ObjectFormat (Suppress, alignment etc.) via reflection for compatibility
+                try
+                {
+                    var fmt = GetProp(obj, "ObjectFormat");
+                    if (fmt != null)
+                    {
+                        var suppress = GetProp(fmt, "EnableSuppress") as bool?;
+                        if (suppress.HasValue) reportObj.Suppress = suppress.Value;
+                        reportObj.Style.TextAlign = (GetProp(fmt, "HorizontalAlignment") ?? GetProp(fmt, "HorizontalAlignment2"))?.ToString();
+                        reportObj.Style.VerticalAlign = (GetProp(fmt, "VerticalAlignment") ?? GetProp(fmt, "VerticalAlignment2"))?.ToString();
+                    }
+                }
+                catch { }
+
                 // Text object
                 if (obj is TextObject textObj)
                 {
@@ -241,6 +308,12 @@ namespace CrystalToSSRS.Converters
                             Underline = textObj.Font.Underline
                         };
                     }
+
+                    // Colors and background via reflection
+                    TrySetColors(reportObj.Style, textObj);
+                    // Rotation if available
+                    var rot = GetProp(textObj, "RotationAngle") as int?;
+                    if (rot.HasValue) reportObj.Style.Rotation = rot.Value;
                 }
                 // Field object
                 else if (obj is FieldObject fieldObj)
@@ -258,6 +331,48 @@ namespace CrystalToSSRS.Converters
                             Underline = fieldObj.Font.Underline
                         };
                     }
+
+                    TrySetColors(reportObj.Style, fieldObj);
+                }
+                // Line object
+                else if (obj is LineObject lineObj)
+                {
+                    reportObj.Text = "<Line>";
+                    // Line thickness
+                    var lw = GetProp(lineObj, "LineWidth") as int?;
+                    if (lw.HasValue) reportObj.Style.LineWidthPt = lw.Value;
+                }
+                // Box object (frame)
+                else if (obj is BoxObject boxObj)
+                {
+                    reportObj.Text = "<Box>";
+                    // Border width/style
+                    var bw = GetProp(boxObj, "BorderWidth") as int?;
+                    if (bw.HasValue) reportObj.Style.BorderWidthPt = bw.Value;
+                    reportObj.Style.BorderStyle = (GetProp(boxObj, "BorderStyle") ?? GetProp(boxObj, "LineStyle"))?.ToString();
+                }
+                // Picture object (image)
+                else if (obj is PictureObject picObj)
+                {
+                    reportObj.Text = "<Image>";
+                    try
+                    {
+                        // Use reflection to get optional GraphicLocation property if available
+                        var prop = picObj.GetType().GetProperty("GraphicLocation");
+                        if (prop != null)
+                        {
+                            var val = prop.GetValue(picObj, null);
+                            if (val != null)
+                                reportObj.DataSource = val.ToString();
+                        }
+                    }
+                    catch { }
+                }
+                // Subreport object
+                else if (obj is SubreportObject subObj)
+                {
+                    reportObj.Text = "<Subreport>";
+                    try { reportObj.DataSource = subObj.SubreportName; } catch { }
                 }
                 
                 return reportObj;
@@ -267,6 +382,79 @@ namespace CrystalToSSRS.Converters
                 Console.WriteLine($"Error extracting report object: {ex.Message}");
                 return null;
             }
+        }
+
+        private void TrySetColors(StyleInfo style, object crystalObj)
+        {
+            try
+            {
+                // Foreground Color
+                var fg = GetProp(crystalObj, "Color");
+                int argb;
+                if (TryGetColorArgb(fg, out argb)) style.ForeColorArgb = argb;
+                // Background Color
+                var bg = GetProp(crystalObj, "BackgroundColor");
+                if (TryGetColorArgb(bg, out argb)) style.BackColorArgb = argb;
+                // Border (if has Border object)
+                var border = GetProp(crystalObj, "Border");
+                if (border != null)
+                {
+                    var bcol = GetProp(border, "Color");
+                    if (TryGetColorArgb(bcol, out argb)) style.BorderColorArgb = argb;
+                    var bw = GetProp(border, "Width") as int?;
+                    if (bw.HasValue) style.BorderWidthPt = bw.Value;
+                    var bs = GetProp(border, "Style");
+                    if (bs != null) style.BorderStyle = bs.ToString();
+                }
+            }
+            catch { }
+        }
+
+        private object GetProp(object obj, string name)
+        {
+            if (obj == null) return null;
+            try
+            {
+                var pi = obj.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
+                return pi?.GetValue(obj, null);
+            }
+            catch { return null; }
+        }
+
+        private bool TryGetColorArgb(object colorObj, out int argb)
+        {
+            argb = 0;
+            if (colorObj == null) return false;
+            try
+            {
+                // If already System.Drawing.Color
+                var t = colorObj.GetType();
+                if (t.FullName == "System.Drawing.Color")
+                {
+                    var a = (int)t.GetProperty("A").GetValue(colorObj, null);
+                    var r = (int)t.GetProperty("R").GetValue(colorObj, null);
+                    var g = (int)t.GetProperty("G").GetValue(colorObj, null);
+                    var b = (int)t.GetProperty("B").GetValue(colorObj, null);
+                    argb = (a << 24) | (r << 16) | (g << 8) | b;
+                    return true;
+                }
+                // Crystal color may expose ToArgb
+                var toArgb = t.GetMethod("ToArgb", Type.EmptyTypes);
+                if (toArgb != null)
+                {
+                    argb = (int)toArgb.Invoke(colorObj, null);
+                    return true;
+                }
+                // Try parse from string #RRGGBB
+                var s = colorObj.ToString();
+                if (!string.IsNullOrEmpty(s) && s.StartsWith("#") && s.Length == 7)
+                {
+                    argb = unchecked((int)(0xFF000000 | Convert.ToInt32(s.Substring(1), 16)));
+                    return true;
+                }
+            }
+            catch { }
+            return false;
         }
         
         private List<ReportParameter> ExtractParameters()

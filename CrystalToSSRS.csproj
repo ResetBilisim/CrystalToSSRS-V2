@@ -90,6 +90,10 @@
       <DesignTime>True</DesignTime>
     </Compile>
     <None Include="BUILD.bat" />
+    <None Include="COMPLETE_FIX_SUMMARY.md" />
+    <None Include="DATASOURCE_TYPE_FIX.md" />
+    <None Include="Directory.Build.props" />
+    <None Include="FINAL_SUMMARY.md" />
     <None Include="IMPROVEMENTS.md" />
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
@@ -100,13 +104,19 @@
       <DependentUpon>Settings.settings</DependentUpon>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
+    <None Include="README_FIRST.md" />
     <None Include="Test-UTF8BOM.ps1" />
+    <None Include="UTF8_BOM_FIX_CHECKLIST.md" />
     <None Include="UTF8_BOM_FIX_DOCUMENTATION.md" />
     <None Include="UTF8_BOM_FIX_FINAL_SUMMARY.md" />
+    <None Include="UTF8_BOM_FIX_INDEX.md" />
     <None Include="UTF8_BOM_FIX_README.md" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="GIT_COMMIT_MESSAGE.txt" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

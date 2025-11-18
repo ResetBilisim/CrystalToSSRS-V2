@@ -1,5 +1,6 @@
 using CrystalToSSRS.Models;
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Xml;
 
@@ -11,88 +12,112 @@ namespace CrystalToSSRS.RDLGenerator
         private XmlDocument _xmlDoc;
         private XmlNamespaceManager _nsmgr;
         private const string RDL_NAMESPACE = "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition";
-        
-        // A4 dimensions (8.5" x 11")
-        private const float PAGE_WIDTH = 8.5f;
-        private const float PAGE_HEIGHT = 11.0f;
-        private const float MARGIN = 0.5f;
-        private const float CONTENT_WIDTH = PAGE_WIDTH - (2 * MARGIN);
-        private const float CONTENT_HEIGHT = PAGE_HEIGHT - (2 * MARGIN);
-        
+        private const string RD_NAMESPACE = "http://schemas.microsoft.com/SQLServer/reporting/reportdesigner";
+        private const string AM_NAMESPACE = "http://schemas.microsoft.com/sqlserver/reporting/authoringmetadata";
+
+        // A4 dimensions in mm
+        private const string PAGE_WIDTH_MM = "210mm";
+        private const string PAGE_HEIGHT_MM = "297mm";
+        private const string MARGIN_MM = "20mm";
+
         public RDLBuilder(CrystalReportModel model)
         {
             _model = model;
             _xmlDoc = new XmlDocument();
             _nsmgr = new XmlNamespaceManager(_xmlDoc.NameTable);
-            _nsmgr.AddNamespace("rd", RDL_NAMESPACE);
+            _nsmgr.AddNamespace("rdl", RDL_NAMESPACE);
+            _nsmgr.AddNamespace("rd", RD_NAMESPACE);
+            _nsmgr.AddNamespace("am", AM_NAMESPACE);
         }
-        
+
         public string GenerateRDL()
         {
-            // Root element
-            var report = CreateElement("Report");
-            report.SetAttribute("xmlns", RDL_NAMESPACE);
+            // Root element with namespaces
+            var report = _xmlDoc.CreateElement("Report", RDL_NAMESPACE);
+            // add xmlns:rd and xmlns:am
+            report.SetAttribute("xmlns:rd", RD_NAMESPACE);
+            report.SetAttribute("xmlns:am", AM_NAMESPACE);
             _xmlDoc.AppendChild(report);
-            
+
+            // rd:ReportUnitType Mm
+            var rdUnit = _xmlDoc.CreateElement("rd", "ReportUnitType", RD_NAMESPACE);
+            rdUnit.InnerText = "Mm";
+            report.AppendChild(rdUnit);
+
+            // AutoRefresh
+            AppendElement(report, "AutoRefresh", "0");
+
             // DataSources
             var dataSources = CreateDataSources();
             report.AppendChild(dataSources);
-            
+
             // DataSets
             var dataSets = CreateDataSets();
             report.AppendChild(dataSets);
-            
+
             // ReportParameters
             if (_model.Parameters != null && _model.Parameters.Count > 0)
             {
                 var parameters = CreateReportParameters();
                 report.AppendChild(parameters);
             }
-            
-            // Variables for formulas
-            if (_model.Formulas != null && _model.Formulas.Count > 0)
-            {
-                var variables = CreateVariables();
-                if (variables.ChildNodes.Count > 0)
-                {
-                    report.AppendChild(variables);
-                }
-            }
-            
+
+            // ReportSections -> ReportSection
+            var reportSections = CreateElement("ReportSections");
+            var reportSection = CreateElement("ReportSection");
+
             // Body
             var body = CreateBody();
-            report.AppendChild(body);
-            
-            // Width and height
-            AppendElement(report, "Width", $"{PAGE_WIDTH}in");
-            
+            reportSection.AppendChild(body);
+
+            // Width at ReportSection level
+            AppendElement(reportSection, "Width", PAGE_WIDTH_MM);
+
             // Page settings
             var page = CreatePageSettings();
-            report.AppendChild(page);
-            
+            reportSection.AppendChild(page);
+
+            reportSections.AppendChild(reportSection);
+            report.AppendChild(reportSections);
+
             return FormatXml(_xmlDoc);
         }
-        
+
         private XmlElement CreateDataSources()
         {
             var dataSources = CreateElement("DataSources");
             var dataSource = CreateElement("DataSource");
-            dataSource.SetAttribute("Name", "OracleDataSource");
-            dataSource.SetAttribute("Type", "");
-            
-            var connProps = CreateOracleConnectionString();
-            dataSource.AppendChild(connProps);
-            
+            dataSource.SetAttribute("Name", "DataSource1");
+
+            // Prefer DataSourceReference if not enough connection info
+            bool hasConn = _model.ConnectionInfo != null && !string.IsNullOrWhiteSpace(_model.ConnectionInfo.ServerName);
+            if (!hasConn)
+            {
+                var rdSecurity = _xmlDoc.CreateElement("rd", "SecurityType", RD_NAMESPACE);
+                rdSecurity.InnerText = "None";
+                dataSource.AppendChild(rdSecurity);
+
+                AppendElement(dataSource, "DataSourceReference", "/DataSource1");
+
+                var rdId = _xmlDoc.CreateElement("rd", "DataSourceID", RD_NAMESPACE);
+                rdId.InnerText = Guid.NewGuid().ToString();
+                dataSource.AppendChild(rdId);
+            }
+            else
+            {
+                var connProps = CreateOracleConnectionString();
+                dataSource.AppendChild(connProps);
+            }
+
             dataSources.AppendChild(dataSource);
             return dataSources;
         }
-        
+
         private XmlElement CreateOracleConnectionString()
         {
             var connProps = CreateElement("ConnectionProperties");
-            
+
             var connInfo = _model.ConnectionInfo;
-            
             string connectionString = string.Empty;
             if (connInfo != null && !string.IsNullOrEmpty(connInfo.ServerName))
             {
@@ -102,59 +127,36 @@ namespace CrystalToSSRS.RDLGenerator
             {
                 connectionString = "Data Source=;User Id=;";
             }
-            
+
             AppendElement(connProps, "DataProvider", "ORACLE");
             AppendElement(connProps, "ConnectString", connectionString);
             AppendElement(connProps, "IntegratedSecurity", "false");
-            
+
             return connProps;
         }
-        
+
         private string BuildOracleConnectionString(OracleConnectionInfo connInfo)
         {
             var sb = new StringBuilder();
-            sb.Append("Data Source=(DESCRIPTION=");
-            sb.Append("(ADDRESS=(PROTOCOL=TCP)");
+            sb.Append("Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)");
             sb.Append($"(HOST={connInfo.ServerName})");
-            
-            if (connInfo.Port > 0)
-            {
-                sb.Append($"(PORT={connInfo.Port})");
-            }
-            else
-            {
-                sb.Append("(PORT=1521)");
-            }
-            
+            if (connInfo.Port > 0) sb.Append($"(PORT={connInfo.Port})"); else sb.Append("(PORT=1521)");
             sb.Append(")");
             sb.Append("(CONNECT_DATA=");
-            
-            if (!string.IsNullOrEmpty(connInfo.ServiceName))
-            {
-                sb.Append($"(SERVICE_NAME={connInfo.ServiceName})");
-            }
-            else if (!string.IsNullOrEmpty(connInfo.DatabaseName))
-            {
-                sb.Append($"(SID={connInfo.DatabaseName})");
-            }
-            
+            if (!string.IsNullOrEmpty(connInfo.ServiceName)) sb.Append($"(SERVICE_NAME={connInfo.ServiceName})");
+            else if (!string.IsNullOrEmpty(connInfo.DatabaseName)) sb.Append($"(SID={connInfo.DatabaseName})");
+            sb.Append(")");
             sb.Append(")");
             sb.Append(");");
-            
-            if (!string.IsNullOrEmpty(connInfo.UserId))
-            {
-                sb.Append($"User Id={connInfo.UserId};");
-            }
-            
+            if (!string.IsNullOrEmpty(connInfo.UserId)) sb.Append($"User Id={connInfo.UserId};");
             return sb.ToString();
         }
-        
+
         private XmlElement CreateDataSets()
         {
             var dataSets = CreateElement("DataSets");
-            
-            // Create dataset for each table
-            if (_model.Tables != null)
+
+            if (_model.Tables != null && _model.Tables.Count > 0)
             {
                 foreach (var table in _model.Tables)
                 {
@@ -162,29 +164,46 @@ namespace CrystalToSSRS.RDLGenerator
                     dataSets.AppendChild(dataSet);
                 }
             }
-            
-            // If no tables, create a default empty dataset
-            if (_model.Tables == null || _model.Tables.Count == 0)
+            else
             {
                 var dataSet = CreateDefaultDataSet();
                 dataSets.AppendChild(dataSet);
             }
-            
+
             return dataSets;
         }
-        
+
         private XmlElement CreateDataSet(DatabaseTable table)
         {
             var dataSet = CreateElement("DataSet");
             dataSet.SetAttribute("Name", SanitizeName(table.Alias ?? table.Name));
-            
-            // Query
+
             var query = CreateElement("Query");
-            AppendElement(query, "DataSourceName", "OracleDataSource");
+            AppendElement(query, "DataSourceName", "DataSource1");
             AppendElement(query, "CommandText", $"SELECT * FROM {table.Name}");
+
+            // Add QueryParameters from model parameters
+            if (_model.Parameters != null && _model.Parameters.Count > 0)
+            {
+                var qps = CreateElement("QueryParameters");
+                foreach (var p in _model.Parameters)
+                {
+                    var qp = CreateElement("QueryParameter");
+                    // Use Oracle-style prefix ':'
+                    qp.SetAttribute("Name", GetQueryParameterName(p.Name));
+                    AppendElement(qp, "Value", $"=Parameters!{SanitizeName(p.Name)}.Value");
+                    qps.AppendChild(qp);
+                }
+                query.AppendChild(qps);
+            }
+
+            // rd:UseGenericDesigner
+            var rdGeneric = _xmlDoc.CreateElement("rd", "UseGenericDesigner", RD_NAMESPACE);
+            rdGeneric.InnerText = "true";
+            query.AppendChild(rdGeneric);
+
             dataSet.AppendChild(query);
-            
-            // Fields - each field as separate item
+
             var fields = CreateElement("Fields");
             if (table.Fields != null)
             {
@@ -192,256 +211,397 @@ namespace CrystalToSSRS.RDLGenerator
                 {
                     var fieldElement = CreateElement("Field");
                     fieldElement.SetAttribute("Name", SanitizeName(field.Name));
-                    
+
                     AppendElement(fieldElement, "DataField", field.Name);
-                    AppendElement(fieldElement, "rd:TypeName", ConvertDataType(field.DataType));
-                    
+
+                    // rd:TypeName in correct namespace
+                    var rdType = _xmlDoc.CreateElement("rd", "TypeName", RD_NAMESPACE);
+                    rdType.InnerText = ConvertFieldClrType(field.DataType);
+                    fieldElement.AppendChild(rdType);
+
                     fields.AppendChild(fieldElement);
                 }
             }
             dataSet.AppendChild(fields);
-            
+
             return dataSet;
         }
-        
+
+        private string GetQueryParameterName(string name)
+        {
+            // Default to Oracle-style parameters
+            var core = SanitizeName(name);
+            if (!string.IsNullOrEmpty(core) && core[0] != ':')
+                return ":" + core;
+            return core;
+        }
+
         private XmlElement CreateDefaultDataSet()
         {
             var dataSet = CreateElement("DataSet");
             dataSet.SetAttribute("Name", "DefaultDataSet");
-            
+
             var query = CreateElement("Query");
-            AppendElement(query, "DataSourceName", "OracleDataSource");
+            AppendElement(query, "DataSourceName", "DataSource1");
             AppendElement(query, "CommandText", "SELECT 1 AS Id");
+            var rdGeneric = _xmlDoc.CreateElement("rd", "UseGenericDesigner", RD_NAMESPACE);
+            rdGeneric.InnerText = "true";
+            query.AppendChild(rdGeneric);
             dataSet.AppendChild(query);
-            
+
             var fields = CreateElement("Fields");
             var fieldElement = CreateElement("Field");
             fieldElement.SetAttribute("Name", "Id");
             AppendElement(fieldElement, "DataField", "Id");
-            AppendElement(fieldElement, "rd:TypeName", "System.Int32");
+            var rdType = _xmlDoc.CreateElement("rd", "TypeName", RD_NAMESPACE);
+            rdType.InnerText = "System.Int32";
+            fieldElement.AppendChild(rdType);
             fields.AppendChild(fieldElement);
             dataSet.AppendChild(fields);
-            
+
             return dataSet;
         }
-        
+
         private XmlElement CreateReportParameters()
         {
             var parameters = CreateElement("ReportParameters");
-            
-            if (_model.Parameters != null)
+
+            foreach (var param in _model.Parameters)
             {
-                foreach (var param in _model.Parameters)
+                var parameter = CreateElement("ReportParameter");
+                parameter.SetAttribute("Name", SanitizeName(param.Name));
+
+                AppendElement(parameter, "DataType", ConvertParameterDataType(param.DataType));
+                AppendElement(parameter, "Prompt", param.PromptText ?? param.Name);
+                AppendElement(parameter, "AllowBlank", "true");
+
+                if (param.AllowMultipleValue)
                 {
-                    var parameter = CreateElement("ReportParameter");
-                    parameter.SetAttribute("Name", SanitizeName(param.Name));
-                    
-                    AppendElement(parameter, "DataType", ConvertDataType(param.DataType));
-                    AppendElement(parameter, "Prompt", param.PromptText ?? param.Name);
-                    AppendElement(parameter, "AllowBlank", "true");
-                    
-                    if (param.AllowMultipleValue)
-                    {
-                        AppendElement(parameter, "MultiValue", "true");
-                    }
-                    
-                    if (param.DefaultValue != null)
-                    {
-                        var defaultValues = CreateElement("DefaultValue");
-                        var values = CreateElement("Values");
-                        AppendElement(values, "Value", param.DefaultValue.ToString());
-                        defaultValues.AppendChild(values);
-                        parameter.AppendChild(defaultValues);
-                    }
-                    
-                    parameters.AppendChild(parameter);
+                    AppendElement(parameter, "MultiValue", "true");
                 }
+
+                if (param.DefaultValue != null)
+                {
+                    var defaultValues = CreateElement("DefaultValue");
+                    var values = CreateElement("Values");
+                    AppendElement(values, "Value", param.DefaultValue.ToString());
+                    defaultValues.AppendChild(values);
+                    parameter.AppendChild(defaultValues);
+                }
+
+                parameters.AppendChild(parameter);
             }
-            
+
             return parameters;
         }
-        
-        private XmlElement CreateVariables()
-        {
-            var variables = CreateElement("Variables");
-            
-            if (_model.Formulas != null)
-            {
-                foreach (var formula in _model.Formulas)
-                {
-                    var variable = CreateElement("Variable");
-                    variable.SetAttribute("Name", SanitizeName(formula.Name));
-                    
-                    // Store formula text as is (will need conversion)
-                    AppendElement(variable, "Value", formula.FormulaText ?? "");
-                    
-                    variables.AppendChild(variable);
-                }
-            }
-            
-            return variables;
-        }
-        
+
         private XmlElement CreateBody()
         {
             var body = CreateElement("Body");
             var reportItems = CreateElement("ReportItems");
-            
-            // Create table with all fields displayed individually
+
             var tablix = CreateDetailedTablix();
             reportItems.AppendChild(tablix);
-            
+
             body.AppendChild(reportItems);
-            AppendElement(body, "Height", $"{CONTENT_HEIGHT}in");
-            
+            AppendElement(body, "Height", "57.15mm");
+            body.AppendChild(CreateElement("Style"));
             return body;
         }
-        
+
         private XmlElement CreateDetailedTablix()
         {
             var tablix = CreateElement("Tablix");
-            tablix.SetAttribute("Name", "FieldDetailsTable");
-            
-            // Get first table's fields for display
-            var fieldsToShow = new System.Collections.Generic.List<TableField>();
+            tablix.SetAttribute("Name", "Tablix1");
+
+            // Determine fields to display
+            var fieldsToShow = new List<TableField>();
             if (_model.Tables != null && _model.Tables.Count > 0)
-            {
                 fieldsToShow = _model.Tables[0].Fields;
-            }
-            
-            // TablixCorner
-            var corner = CreateTablixCorner();
-            
-            // TablixBody with rows and columns
-            var tablixBody = CreateElement("TablixBody");
-            var tablixColumns = CreateElement("TablixColumns");
-            var tablixRows = CreateElement("TablixRows");
-            
-            // Create columns for each field
-            float colWidth = (CONTENT_WIDTH - 1.0f) / Math.Max(fieldsToShow.Count, 1);
-            
-            foreach (var field in fieldsToShow)
+
+            // Example-based column widths (mm) - will apply in order
+            var sampleWidths = new List<string>
             {
-                AppendElement(tablixColumns, "TablixColumn", null);
-                var colWidth_elem = CreateElement("Width");
-                colWidth_elem.InnerText = $"{colWidth}in";
-                tablixColumns.LastChild?.AppendChild(colWidth_elem);
-            }
-            
-            // Header row
-            var headerRow = CreateTablixRow(fieldsToShow, isHeader: true);
-            tablixRows.AppendChild(headerRow);
-            
-            // Detail row
-            var detailRow = CreateTablixRow(fieldsToShow, isHeader: false);
-            tablixRows.AppendChild(detailRow);
-            
-            tablixBody.AppendChild(tablixColumns);
-            tablixBody.AppendChild(tablixRows);
-            tablix.AppendChild(tablixBody);
-            
-            // DataSetName
-            if (_model.Tables != null && _model.Tables.Count > 0)
+                "54.10417mm","32.40833mm","27.64583mm","60.98333mm","36.64167mm","36.37708mm",
+                "36.90625mm","35.05417mm","31.08542mm","33.99583mm","35.58333mm","34.26042mm",
+                "39.55208mm","35.05417mm","29.49792mm"
+            };
+
+            int colCount = Math.Max(1, fieldsToShow.Count);
+
+            // TablixBody
+            var body = CreateElement("TablixBody");
+            var columns = CreateElement("TablixColumns");
+            var rows = CreateElement("TablixRows");
+
+            // Columns with sample widths when available
+            for (int i = 0; i < colCount; i++)
             {
-                AppendElement(tablix, "DataSetName", SanitizeName(_model.Tables[0].Alias ?? _model.Tables[0].Name));
+                var col = CreateElement("TablixColumn");
+                string width = i < sampleWidths.Count ? sampleWidths[i] : "35mm";
+                AppendElement(col, "Width", width);
+                columns.AppendChild(col);
             }
-            
-            AppendElement(tablix, "Top", $"{MARGIN}in");
-            AppendElement(tablix, "Left", $"{MARGIN}in");
-            AppendElement(tablix, "Height", $"{CONTENT_HEIGHT * 0.5}in");
-            AppendElement(tablix, "Width", $"{CONTENT_WIDTH}in");
-            
-            return tablix;
-        }
-        
-        private XmlElement CreateTablixCorner()
-        {
-            var corner = CreateElement("TablixCorner");
-            // Corner cell for row headers
-            return corner;
-        }
-        
-        private XmlElement CreateTablixRow(System.Collections.Generic.List<TableField> fields, bool isHeader)
-        {
-            var row = CreateElement("TablixRow");
-            
-            foreach (var field in fields)
+
+            // Optional parameters row (spans all columns)
+            if (_model.Parameters != null && _model.Parameters.Count > 0)
+            {
+                var prmRow = CreateElement("TablixRow");
+                AppendElement(prmRow, "Height", "7.5875mm");
+                var prmCells = CreateElement("TablixCells");
+                for (int i = 0; i < colCount; i++)
+                {
+                    var cell = CreateElement("TablixCell");
+                    if (i == 0)
+                    {
+                        var cellContents = CreateElement("CellContents");
+                        var tb = CreateElement("Textbox");
+                        tb.SetAttribute("Name", "ParametersLine");
+                        AppendElement(tb, "CanGrow", "true");
+                        AppendElement(tb, "KeepTogether", "true");
+                        var paras = CreateElement("Paragraphs");
+                        var para = CreateElement("Paragraph");
+                        var textRuns = CreateElement("TextRuns");
+
+                        // Build: Parametreler: Name: =Parameters!Name.Value, ...
+                        var trIntro = CreateElement("TextRun");
+                        AppendElement(trIntro, "Value", "Parametreler: ");
+                        var trIntroStyle = CreateElement("Style");
+                        AppendElement(trIntroStyle, "FontFamily", "Calibri");
+                        AppendElement(trIntroStyle, "FontSize", "12pt");
+                        AppendElement(trIntroStyle, "FontWeight", "Bold");
+                        AppendElement(trIntroStyle, "Color", "White");
+                        trIntro.AppendChild(trIntroStyle);
+                        textRuns.AppendChild(trIntro);
+
+                        for (int p = 0; p < _model.Parameters.Count; p++)
+                        {
+                            var prm = _model.Parameters[p];
+                            // Label
+                            var trLbl = CreateElement("TextRun");
+                            AppendElement(trLbl, "Value", (p > 0 ? ", " : "") + prm.Name + ": ");
+                            var trLblStyle = CreateElement("Style");
+                            AppendElement(trLblStyle, "FontFamily", "Calibri");
+                            AppendElement(trLblStyle, "FontSize", "12pt");
+                            AppendElement(trLblStyle, "FontWeight", "Bold");
+                            AppendElement(trLblStyle, "Color", "White");
+                            trLbl.AppendChild(trLblStyle);
+                            textRuns.AppendChild(trLbl);
+                            // Value
+                            var trVal = CreateElement("TextRun");
+                            AppendElement(trVal, "Value", $"=Parameters!{SanitizeName(prm.Name)}.Value");
+                            var trValStyle = CreateElement("Style");
+                            AppendElement(trValStyle, "FontFamily", "Calibri");
+                            AppendElement(trValStyle, "FontSize", "12pt");
+                            AppendElement(trValStyle, "FontWeight", "Bold");
+                            AppendElement(trValStyle, "Color", "White");
+                            trVal.AppendChild(trValStyle);
+                            textRuns.AppendChild(trVal);
+                        }
+
+                        para.AppendChild(textRuns);
+                        para.AppendChild(CreateElement("Style"));
+                        paras.AppendChild(para);
+                        tb.AppendChild(paras);
+
+                        var tbStyle = CreateElement("Style");
+                        var border = CreateElement("Border");
+                        AppendElement(border, "Color", "LightGrey");
+                        AppendElement(border, "Style", "Solid");
+                        tbStyle.AppendChild(border);
+                        AppendElement(tbStyle, "BackgroundColor", "#305496");
+                        AppendElement(tbStyle, "PaddingLeft", "2pt");
+                        AppendElement(tbStyle, "PaddingRight", "2pt");
+                        AppendElement(tbStyle, "PaddingTop", "2pt");
+                        AppendElement(tbStyle, "PaddingBottom", "2pt");
+                        tb.AppendChild(tbStyle);
+
+                        cellContents.AppendChild(tb);
+                        // ColSpan across all columns
+                        AppendElement(cellContents, "ColSpan", colCount.ToString());
+                        cell.AppendChild(cellContents);
+                    }
+                    // other cells remain empty to respect colspan
+                    prmCells.AppendChild(cell);
+                }
+                prmRow.AppendChild(prmCells);
+                rows.AppendChild(prmRow);
+            }
+
+            // Header row (style as sample)
+            var headerRow = CreateElement("TablixRow");
+            AppendElement(headerRow, "Height", "12.61458mm"); // sample header height
+            var headerCells = CreateElement("TablixCells");
+            for (int i = 0; i < colCount; i++)
             {
                 var cell = CreateElement("TablixCell");
-                var reportItem = CreateElement("ReportItem");
-                
-                reportItem.SetAttribute("Name", SanitizeName(field.Name));
-                
-                // Create textbox
-                var textbox = CreateElement("Textbox");
-                textbox.SetAttribute("Name", SanitizeName(field.Name) + "TextBox");
-                
-                if (isHeader)
-                {
-                    AppendElement(textbox, "CanGrow", "true");
-                    AppendElement(textbox, "CanShrink", "false");
-                    AppendElement(textbox, "Value", field.Name);
-                }
-                else
-                {
-                    AppendElement(textbox, "CanGrow", "true");
-                    AppendElement(textbox, "CanShrink", "false");
-                    AppendElement(textbox, "Value", $"=Fields!{SanitizeName(field.Name)}.Value");
-                }
-                
-                // Styling
-                var style = CreateElement("Style");
-                if (isHeader)
-                {
-                    AppendElement(style, "BackgroundColor", "LightGray");
-                    AppendElement(style, "FontWeight", "Bold");
-                }
-                AppendElement(style, "BorderStyle", "Solid");
-                AppendElement(style, "BorderWidth", "1pt");
-                AppendElement(style, "BorderColor", "Black");
-                AppendElement(style, "PaddingLeft", "2pt");
-                AppendElement(style, "PaddingRight", "2pt");
-                textbox.AppendChild(style);
-                
-                reportItem.AppendChild(textbox);
-                cell.AppendChild(reportItem);
-                row.AppendChild(cell);
+                var cellContents = CreateElement("CellContents");
+                var tb = CreateElement("Textbox");
+                tb.SetAttribute("Name", SanitizeName((fieldsToShow.Count > i ? fieldsToShow[i].Name : $"Col{i+1}") + "_Header"));
+                AppendElement(tb, "CanGrow", "true");
+                AppendElement(tb, "KeepTogether", "true");
+                var paras = CreateElement("Paragraphs");
+                var para = CreateElement("Paragraph");
+                var textRuns = CreateElement("TextRuns");
+                var tr = CreateElement("TextRun");
+                AppendElement(tr, "Value", fieldsToShow.Count > i ? fieldsToShow[i].Name : $"Column {i+1}");
+                var styleTr = CreateElement("Style");
+                AppendElement(styleTr, "FontFamily", "Calibri");
+                AppendElement(styleTr, "FontSize", "12pt"); // sample header font size
+                AppendElement(styleTr, "FontWeight", "Bold");
+                AppendElement(styleTr, "Color", "White");
+                tr.AppendChild(styleTr);
+                textRuns.AppendChild(tr);
+                para.AppendChild(textRuns);
+                para.AppendChild(CreateElement("Style"));
+                paras.AppendChild(para);
+                tb.AppendChild(paras);
+                var tbStyle = CreateElement("Style");
+                var border = CreateElement("Border");
+                AppendElement(border, "Color", "LightGrey");
+                AppendElement(border, "Style", "Solid");
+                tbStyle.AppendChild(border);
+                AppendElement(tbStyle, "BackgroundColor", "#305496"); // sample background
+                AppendElement(tbStyle, "PaddingLeft", "2pt");
+                AppendElement(tbStyle, "PaddingRight", "2pt");
+                AppendElement(tbStyle, "PaddingTop", "2pt");
+                AppendElement(tbStyle, "PaddingBottom", "2pt");
+                tb.AppendChild(tbStyle);
+                cellContents.AppendChild(tb);
+                cell.AppendChild(cellContents);
+                headerCells.AppendChild(cell);
             }
-            
-            return row;
+            headerRow.AppendChild(headerCells);
+            rows.AppendChild(headerRow);
+
+            // Detail row
+            var detailRow = CreateElement("TablixRow");
+            AppendElement(detailRow, "Height", "6mm");
+            var detailCells = CreateElement("TablixCells");
+            for (int i = 0; i < colCount; i++)
+            {
+                var cell = CreateElement("TablixCell");
+                var cellContents = CreateElement("CellContents");
+                var tb = CreateElement("Textbox");
+                string fieldName = fieldsToShow.Count > i ? fieldsToShow[i].Name : $"Col{i+1}";
+                tb.SetAttribute("Name", SanitizeName(fieldName));
+                AppendElement(tb, "CanGrow", "true");
+                AppendElement(tb, "KeepTogether", "true");
+                var paras = CreateElement("Paragraphs");
+                var para = CreateElement("Paragraph");
+                var textRuns = CreateElement("TextRuns");
+                var tr = CreateElement("TextRun");
+                AppendElement(tr, "Value", $"=Fields!{SanitizeName(fieldName)}.Value");
+                var styleTr = CreateElement("Style");
+                AppendElement(styleTr, "FontFamily", "Calibri");
+                AppendElement(styleTr, "FontSize", "11pt");
+                tr.AppendChild(styleTr);
+                textRuns.AppendChild(tr);
+                para.AppendChild(textRuns);
+                para.AppendChild(CreateElement("Style"));
+                paras.AppendChild(para);
+                tb.AppendChild(paras);
+                var tbStyle = CreateElement("Style");
+                var border = CreateElement("Border");
+                AppendElement(border, "Color", "LightGrey");
+                AppendElement(border, "Style", "Solid");
+                tbStyle.AppendChild(border);
+                AppendElement(tbStyle, "PaddingLeft", "2pt");
+                AppendElement(tbStyle, "PaddingRight", "2pt");
+                AppendElement(tbStyle, "PaddingTop", "2pt");
+                AppendElement(tbStyle, "PaddingBottom", "2pt");
+                tb.AppendChild(tbStyle);
+                cellContents.AppendChild(tb);
+                cell.AppendChild(cellContents);
+                detailCells.AppendChild(cell);
+            }
+            detailRow.AppendChild(detailCells);
+            rows.AppendChild(detailRow);
+
+            body.AppendChild(columns);
+            body.AppendChild(rows);
+            tablix.AppendChild(body);
+
+            // ColumnHierarchy
+            var colHier = CreateElement("TablixColumnHierarchy");
+            var colMembers = CreateElement("TablixMembers");
+            for (int i = 0; i < colCount; i++)
+            {
+                colMembers.AppendChild(CreateElement("TablixMember"));
+            }
+            colHier.AppendChild(colMembers);
+            tablix.AppendChild(colHier);
+
+            // RowHierarchy (Header + Details)
+            var rowHier = CreateElement("TablixRowHierarchy");
+            var rowMembers = CreateElement("TablixMembers");
+            if (_model.Parameters != null && _model.Parameters.Count > 0)
+            {
+                var mParams = CreateElement("TablixMember");
+                AppendElement(mParams, "KeepWithGroup", "After");
+                rowMembers.AppendChild(mParams);
+            }
+            var mHeader = CreateElement("TablixMember");
+            AppendElement(mHeader, "KeepWithGroup", "After");
+            rowMembers.AppendChild(mHeader);
+            var mDetail = CreateElement("TablixMember");
+            var grp = CreateElement("Group");
+            grp.SetAttribute("Name", "Ayrıntılar");
+            mDetail.AppendChild(grp);
+            rowMembers.AppendChild(mDetail);
+            rowHier.AppendChild(rowMembers);
+            tablix.AppendChild(rowHier);
+
+            // DataSetName and position/size
+            if (_model.Tables != null && _model.Tables.Count > 0)
+                AppendElement(tablix, "DataSetName", SanitizeName(_model.Tables[0].Alias ?? _model.Tables[0].Name));
+            AppendElement(tablix, "Top", "0mm");
+            AppendElement(tablix, "Left", "0mm");
+            AppendElement(tablix, "Height", "43.49374mm"); // sample height
+            AppendElement(tablix, "Width", "559.15mm");     // sample width
+
+            var tblStyle = CreateElement("Style");
+            var b = CreateElement("Border");
+            AppendElement(b, "Style", "None");
+            tblStyle.AppendChild(b);
+            tablix.AppendChild(tblStyle);
+
+            return tablix;
         }
-        
+
         private XmlElement CreatePageSettings()
         {
             var page = CreateElement("Page");
-            
-            AppendElement(page, "PageHeight", $"{PAGE_HEIGHT}in");
-            AppendElement(page, "PageWidth", $"{PAGE_WIDTH}in");
-            
-            var leftMargin = CreateElement("LeftMargin");
-            leftMargin.InnerText = $"{MARGIN}in";
-            page.AppendChild(leftMargin);
-            
-            var rightMargin = CreateElement("RightMargin");
-            rightMargin.InnerText = $"{MARGIN}in";
-            page.AppendChild(rightMargin);
-            
-            var topMargin = CreateElement("TopMargin");
-            topMargin.InnerText = $"{MARGIN}in";
-            page.AppendChild(topMargin);
-            
-            var bottomMargin = CreateElement("BottomMargin");
-            bottomMargin.InnerText = $"{MARGIN}in";
-            page.AppendChild(bottomMargin);
-            
+
+            // Optional footer (empty)
+            var footer = CreateElement("PageFooter");
+            AppendElement(footer, "Height", "11.43mm");
+            AppendElement(footer, "PrintOnFirstPage", "true");
+            AppendElement(footer, "PrintOnLastPage", "true");
+            var fs = CreateElement("Style");
+            var fb = CreateElement("Border");
+            AppendElement(fb, "Style", "None");
+            fs.AppendChild(fb);
+            footer.AppendChild(fs);
+            page.AppendChild(footer);
+
+            AppendElement(page, "PageHeight", PAGE_HEIGHT_MM);
+            AppendElement(page, "PageWidth", PAGE_WIDTH_MM);
+            AppendElement(page, "LeftMargin", MARGIN_MM);
+            AppendElement(page, "RightMargin", MARGIN_MM);
+            AppendElement(page, "TopMargin", MARGIN_MM);
+            AppendElement(page, "BottomMargin", MARGIN_MM);
+            AppendElement(page, "ColumnSpacing", "0.13cm");
+            page.AppendChild(CreateElement("Style"));
+
             return page;
         }
-        
+
         private XmlElement CreateElement(string name)
         {
             return _xmlDoc.CreateElement(name, RDL_NAMESPACE);
         }
-        
+
         private void AppendElement(XmlElement parent, string childName, string value)
         {
             var child = CreateElement(childName);
@@ -451,60 +611,52 @@ namespace CrystalToSSRS.RDLGenerator
             }
             parent.AppendChild(child);
         }
-        
+
         private string SanitizeName(string name)
         {
             if (string.IsNullOrEmpty(name))
                 return "Field";
-            
-            // Remove invalid characters for SSRS names
             var sb = new StringBuilder();
             foreach (char c in name)
             {
-                if (char.IsLetterOrDigit(c) || c == '_')
-                    sb.Append(c);
-                else
-                    sb.Append('_');
+                if (char.IsLetterOrDigit(c) || c == '_') sb.Append(c); else sb.Append('_');
             }
-            
             var result = sb.ToString();
-            if (result.Length == 0)
-                result = "Field";
-            
+            if (result.Length == 0) result = "Field";
             return result;
         }
-        
-        private string ConvertDataType(string crystalDataType)
+
+        private string ConvertFieldClrType(string crystalDataType)
         {
-            if (string.IsNullOrEmpty(crystalDataType))
-                return "System.String";
-            
-            // Convert Crystal Reports data types to SSRS data types
+            if (string.IsNullOrEmpty(crystalDataType)) return "System.String";
             var upper = crystalDataType.ToUpper();
-            
-            if (upper.Contains("VARCHAR") || upper.Contains("STRING") || upper.Contains("CHAR"))
-                return "System.String";
-            else if (upper.Contains("NUMBER") || upper.Contains("DECIMAL"))
-                return "System.Decimal";
-            else if (upper.Contains("INT"))
-                return "System.Int32";
-            else if (upper.Contains("DATE") || upper.Contains("DATETIME") || upper.Contains("TIMESTAMP"))
-                return "System.DateTime";
-            else if (upper.Contains("BOOLEAN") || upper.Contains("BIT"))
-                return "System.Boolean";
-            else if (upper.Contains("FLOAT") || upper.Contains("DOUBLE"))
-                return "System.Double";
-            
+            if (upper.Contains("VARCHAR") || upper.Contains("STRING") || upper.Contains("CHAR")) return "System.String";
+            if (upper.Contains("NUMBER") || upper.Contains("DECIMAL")) return "System.Decimal";
+            if (upper.Contains("INT")) return "System.Int32";
+            if (upper.Contains("DATE") || upper.Contains("DATETIME") || upper.Contains("TIMESTAMP")) return "System.DateTime";
+            if (upper.Contains("BOOLEAN") || upper.Contains("BIT")) return "System.Boolean";
+            if (upper.Contains("FLOAT") || upper.Contains("DOUBLE")) return "System.Double";
             return "System.String";
         }
-        
+
+        private string ConvertParameterDataType(string crystalDataType)
+        {
+            if (string.IsNullOrEmpty(crystalDataType))
+                return "String";
+            var upper = crystalDataType.ToUpper();
+            if (upper.Contains("VARCHAR") || upper.Contains("STRING") || upper.Contains("CHAR")) return "String";
+            if (upper.Contains("NUMBER") || upper.Contains("DECIMAL")) return "Float";
+            if (upper.Contains("INT")) return "Integer";
+            if (upper.Contains("DOUBLE") || upper.Contains("FLOAT")) return "Float";
+            if (upper.Contains("DATE") || upper.Contains("DATETIME") || upper.Contains("TIMESTAMP")) return "DateTime";
+            if (upper.Contains("BOOLEAN") || upper.Contains("BIT")) return "Boolean";
+            return "String";
+        }
+
         private string FormatXml(XmlDocument doc)
         {
             var sb = new StringBuilder();
-            
-            // Add XML declaration with UTF-8 BOM
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
-            
             var settings = new XmlWriterSettings
             {
                 Indent = true,
@@ -512,45 +664,20 @@ namespace CrystalToSSRS.RDLGenerator
                 NewLineChars = "\r\n",
                 NewLineHandling = NewLineHandling.Replace,
                 Encoding = System.Text.Encoding.UTF8,
-                OmitXmlDeclaration = true  // We're adding it manually
+                OmitXmlDeclaration = true
             };
-            
             using (var writer = XmlWriter.Create(sb, settings))
             {
                 doc.Save(writer);
             }
-            
             return sb.ToString();
         }
-        
+
         public void SaveToFile(string filePath)
         {
-            try
-            {
-                var rdlContent = GenerateRDL();
-                
-                // UTF-8 with BOM encoding (UTF-8 BOM: EF BB BF)
-                var encoding = new System.Text.UTF8Encoding(true);
-                System.IO.File.WriteAllText(filePath, rdlContent, encoding);
-                
-                Console.WriteLine($"RDL file successfully saved with UTF-8 BOM: {filePath}");
-                
-                // Verify BOM was written
-                var fileBytes = System.IO.File.ReadAllBytes(filePath);
-                if (fileBytes.Length >= 3 && fileBytes[0] == 0xEF && fileBytes[1] == 0xBB && fileBytes[2] == 0xBF)
-                {
-                    Console.WriteLine("UTF-8 BOM verification: OK");
-                }
-                else
-                {
-                    Console.WriteLine("WARNING: UTF-8 BOM not found in file!");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error saving RDL file: {ex.Message}");
-                throw;
-            }
+            var rdlContent = GenerateRDL();
+            var encoding = new System.Text.UTF8Encoding(true);
+            System.IO.File.WriteAllText(filePath, rdlContent, encoding);
         }
     }
 }
