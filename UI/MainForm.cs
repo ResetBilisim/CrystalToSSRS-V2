@@ -310,7 +310,7 @@ namespace CrystalToSSRS.UI
         }
         
         // Event Handlers
-        private void OnOpenRpt(object sender, EventArgs e)
+        private async void OnOpenRpt(object sender, EventArgs e)
         {
             using (var ofd = new OpenFileDialog())
             {
@@ -319,25 +319,37 @@ namespace CrystalToSSRS.UI
                 
                 if (ofd.ShowDialog() == DialogResult.OK)
                 {
-                    LoadRptFile(ofd.FileName);
+                    await LoadRptFileAsync(ofd.FileName);
                 }
             }
         }
         
-        private void LoadRptFile(string filePath)
+        private async System.Threading.Tasks.Task LoadRptFileAsync(string filePath)
         {
             try
             {
-                lblStatus.Text = "Rapor yükleniyor...";
-                Application.DoEvents();
+                SetBusy(true, "Rapor yükleniyor...");
                 
                 _currentRptPath = filePath;
-                _currentModel = _parser.ParseReport(filePath);
+                // Parse on background thread
+                _currentModel = await System.Threading.Tasks.Task.Run(() => _parser.ParseReport(filePath));
+
+                // Ensure ConnectionInfo exists to avoid null in UI
+                if (_currentModel.ConnectionInfo == null)
+                    _currentModel.ConnectionInfo = new OracleConnectionInfo();
+                
+                // Skip UI population if fatal error occurred
+                if (_currentModel.ParseErrors != null && _currentModel.ParseErrors.Exists(e => e != null && e.StartsWith("Fatal", System.StringComparison.OrdinalIgnoreCase)))
+                {
+                    var msg = string.Join("\n", _currentModel.ParseErrors);
+                    MessageBox.Show("RPT yüklenemedi:\n\n" + msg, "Hata", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
                 
                 PopulateTreeView();
                 DrawDesignView();
                 
-                // Hata özeti
+                // Hata özeti (fatal olmayanlar)
                 if (_currentModel.ParseErrors != null && _currentModel.ParseErrors.Count > 0)
                 {
                     var msg = string.Join("\n", _currentModel.ParseErrors);
@@ -353,12 +365,29 @@ namespace CrystalToSSRS.UI
                     $"Tables: {_currentModel.Tables.Count}",
                     "Bilgi", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
-            catch (Exception ex)
+            catch (System.Exception ex)
             {
                 lblStatus.Text = "Hata!";
                 MessageBox.Show($"Rapor yüklenirken hata:\n{ex.Message}", 
                     "Hata", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            finally
+            {
+                SetBusy(false);
+            }
+        }
+        
+        private void SetBusy(bool busy, string status = null)
+        {
+            try
+            {
+                if (status != null) lblStatus.Text = status;
+                this.UseWaitCursor = busy;
+                Cursor.Current = busy ? Cursors.WaitCursor : Cursors.Default;
+                if (menuStrip != null) menuStrip.Enabled = !busy;
+                if (toolStrip != null) toolStrip.Enabled = !busy;
+            }
+            catch { }
         }
         
         private void PopulateTreeView()
@@ -367,7 +396,11 @@ namespace CrystalToSSRS.UI
             
             if (_currentModel == null) return;
             
-            var rootNode = new TreeNode(_currentModel.ReportName)
+            var safeName = string.IsNullOrWhiteSpace(_currentModel.ReportName)
+                ? (Path.GetFileNameWithoutExtension(_currentRptPath) ?? "(İsimsiz Rapor)")
+                : _currentModel.ReportName;
+            
+            var rootNode = new TreeNode(safeName)
             {
                 Tag = _currentModel
             };
@@ -377,14 +410,15 @@ namespace CrystalToSSRS.UI
             {
                 var errNode = new TreeNode($"Errors ({_currentModel.ParseErrors.Count})");
                 foreach (var err in _currentModel.ParseErrors)
-                    errNode.Nodes.Add(new TreeNode(err));
+                    errNode.Nodes.Add(new TreeNode(err ?? "(null)"));
                 rootNode.Nodes.Add(errNode);
             }
             
-            // Connection Info
-            var connNode = new TreeNode($"Oracle Connection: {_currentModel.ConnectionInfo.ServerName}")
+            // Connection Info (null-safe)
+            var connInfo = _currentModel.ConnectionInfo;
+            var connNode = new TreeNode($"Oracle Connection: {connInfo?.ServerName ?? "(yok)"}")
             {
-                Tag = _currentModel.ConnectionInfo
+                Tag = connInfo ?? new OracleConnectionInfo()
             };
             rootNode.Nodes.Add(connNode);
             

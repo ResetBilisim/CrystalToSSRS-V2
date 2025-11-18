@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Xml;
+using System.Globalization;
 
 namespace CrystalToSSRS.RDLGenerator
 {
@@ -189,8 +190,8 @@ namespace CrystalToSSRS.RDLGenerator
                 foreach (var p in _model.Parameters)
                 {
                     var qp = CreateElement("QueryParameter");
-                    // Use Oracle-style prefix ':'
-                    qp.SetAttribute("Name", GetQueryParameterName(p.Name));
+                    // Name must be a valid RDL identifier; do not include ':'
+                    qp.SetAttribute("Name", SanitizeName(p.Name));
                     AppendElement(qp, "Value", $"=Parameters!{SanitizeName(p.Name)}.Value");
                     qps.AppendChild(qp);
                 }
@@ -229,11 +230,8 @@ namespace CrystalToSSRS.RDLGenerator
 
         private string GetQueryParameterName(string name)
         {
-            // Default to Oracle-style parameters
-            var core = SanitizeName(name);
-            if (!string.IsNullOrEmpty(core) && core[0] != ':')
-                return ":" + core;
-            return core;
+            // RDL Name cannot contain ':'; keep tokens (e.g., :Param) only in the SQL text if used.
+            return SanitizeName(name);
         }
 
         private XmlElement CreateDefaultDataSet()
@@ -303,10 +301,62 @@ namespace CrystalToSSRS.RDLGenerator
             var tablix = CreateDetailedTablix();
             reportItems.AppendChild(tablix);
 
+            // Add Subreport items for Crystal subreport objects
+            AddSubreports(reportItems);
+
             body.AppendChild(reportItems);
             AppendElement(body, "Height", "57.15mm");
             body.AppendChild(CreateElement("Style"));
             return body;
+        }
+
+        private void AddSubreports(XmlElement reportItems)
+        {
+            if (_model.Sections == null) return;
+            foreach (var section in _model.Sections)
+            {
+                if (section?.Objects == null) continue;
+                foreach (var obj in section.Objects)
+                {
+                    // Crystal parser sets Type from obj.Kind.ToString(), and for SubreportObject we also set Text = "<Subreport>"
+                    var isSubreport = string.Equals(obj.Type, "SubreportObject", StringComparison.OrdinalIgnoreCase)
+                                      || string.Equals(obj.Text, "<Subreport>", StringComparison.OrdinalIgnoreCase);
+                    if (!isSubreport) continue;
+
+                    var sub = CreateElement("Subreport");
+                    sub.SetAttribute("Name", SanitizeName(obj.Name ?? obj.DataSource ?? "Subreport"));
+
+                    // RDL: ReportName is the referenced report. Use DataSource (Crystal subreport name) when present
+                    AppendElement(sub, "ReportName", SanitizeName(obj.DataSource ?? obj.Name ?? "Subreport"));
+
+                    // Position and size from Crystal (twips to mm)
+                    AppendElement(sub, "Top", TwipsToMm(obj.Top));
+                    AppendElement(sub, "Left", TwipsToMm(obj.Left));
+                    AppendElement(sub, "Height", TwipsToMm(obj.Height));
+                    AppendElement(sub, "Width", TwipsToMm(obj.Width));
+
+                    // Style/Border minimal
+                    var style = CreateElement("Style");
+                    var border = CreateElement("Border");
+                    AppendElement(border, "Style", "None");
+                    style.AppendChild(border);
+                    sub.AppendChild(style);
+
+                    // Parameters could be mapped here if available in model
+                    // var parameters = CreateElement("Parameters");
+                    // ... add Parameter elements
+                    // sub.AppendChild(parameters);
+
+                    reportItems.AppendChild(sub);
+                }
+            }
+        }
+
+        private string TwipsToMm(double twips)
+        {
+            // 1440 twips = 1 inch, 1 inch = 25.4 mm
+            var mm = twips * 25.4 / 1440.0;
+            return mm.ToString("0.###", CultureInfo.InvariantCulture) + "mm";
         }
 
         private XmlElement CreateDetailedTablix()
@@ -546,7 +596,7 @@ namespace CrystalToSSRS.RDLGenerator
             rowMembers.AppendChild(mHeader);
             var mDetail = CreateElement("TablixMember");
             var grp = CreateElement("Group");
-            grp.SetAttribute("Name", "Ayrıntılar");
+            grp.SetAttribute("Name", "Details");
             mDetail.AppendChild(grp);
             rowMembers.AppendChild(mDetail);
             rowHier.AppendChild(rowMembers);
@@ -623,6 +673,8 @@ namespace CrystalToSSRS.RDLGenerator
             }
             var result = sb.ToString();
             if (result.Length == 0) result = "Field";
+            // Names in RDL cannot start with digits; prepend underscore if necessary
+            if (char.IsDigit(result[0])) result = "_" + result;
             return result;
         }
 

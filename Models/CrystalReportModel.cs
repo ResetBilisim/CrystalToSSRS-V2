@@ -6,7 +6,7 @@ namespace CrystalToSSRS.Models
     public class CrystalReportModel
     {
         public string ReportName { get; set; }
-        public OracleConnectionInfo ConnectionInfo { get; set; }
+        public OracleConnectionInfo ConnectionInfo { get; set; } = new OracleConnectionInfo();
         public List<ReportSection> Sections { get; set; }
         public List<ReportParameter> Parameters { get; set; }
         public List<ReportFormula> Formulas { get; set; }

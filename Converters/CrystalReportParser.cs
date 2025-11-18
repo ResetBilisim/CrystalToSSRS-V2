@@ -72,6 +72,10 @@ namespace CrystalToSSRS.Converters
             catch (Exception ex)
             {
                 if (model == null) model = new CrystalReportModel();
+                if (model.ConnectionInfo == null) model.ConnectionInfo = new OracleConnectionInfo();
+                // Ensure ReportName is set to a safe value when load fails
+                if (string.IsNullOrWhiteSpace(model.ReportName))
+                    model.ReportName = System.IO.Path.GetFileNameWithoutExtension(rptFilePath) ?? "(Unknown)";
                 model.ParseErrors.Add($"Fatal: {ex.GetType().Name}: {ex.Message}");
                 Console.WriteLine($"Fatal error parsing report: {ex.Message}");
                 return model;
@@ -399,12 +403,8 @@ namespace CrystalToSSRS.Converters
                 var border = GetProp(crystalObj, "Border");
                 if (border != null)
                 {
-                    var bcol = GetProp(border, "Color");
-                    if (TryGetColorArgb(bcol, out argb)) style.BorderColorArgb = argb;
-                    var bw = GetProp(border, "Width") as int?;
-                    if (bw.HasValue) style.BorderWidthPt = bw.Value;
-                    var bs = GetProp(border, "Style");
-                    if (bs != null) style.BorderStyle = bs.ToString();
+                    var bc = GetProp(border, "Color");
+                    if (TryGetColorArgb(bc, out argb)) style.BorderColorArgb = argb;
                 }
             }
             catch { }
@@ -412,82 +412,58 @@ namespace CrystalToSSRS.Converters
 
         private object GetProp(object obj, string name)
         {
-            if (obj == null) return null;
             try
             {
-                var pi = obj.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
-                return pi?.GetValue(obj, null);
+                if (obj == null) return null;
+                var t = obj.GetType();
+                var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic);
+                return p != null ? p.GetValue(obj, null) : null;
             }
             catch { return null; }
         }
 
         private bool TryGetColorArgb(object colorObj, out int argb)
         {
-            argb = 0;
-            if (colorObj == null) return false;
             try
             {
-                // If already System.Drawing.Color
+                if (colorObj == null) { argb = 0; return false; }
                 var t = colorObj.GetType();
-                if (t.FullName == "System.Drawing.Color")
-                {
-                    var a = (int)t.GetProperty("A").GetValue(colorObj, null);
-                    var r = (int)t.GetProperty("R").GetValue(colorObj, null);
-                    var g = (int)t.GetProperty("G").GetValue(colorObj, null);
-                    var b = (int)t.GetProperty("B").GetValue(colorObj, null);
-                    argb = (a << 24) | (r << 16) | (g << 8) | b;
-                    return true;
-                }
-                // Crystal color may expose ToArgb
-                var toArgb = t.GetMethod("ToArgb", Type.EmptyTypes);
-                if (toArgb != null)
-                {
-                    argb = (int)toArgb.Invoke(colorObj, null);
-                    return true;
-                }
-                // Try parse from string #RRGGBB
-                var s = colorObj.ToString();
-                if (!string.IsNullOrEmpty(s) && s.StartsWith("#") && s.Length == 7)
-                {
-                    argb = unchecked((int)(0xFF000000 | Convert.ToInt32(s.Substring(1), 16)));
-                    return true;
-                }
+                var a = (byte)t.GetProperty("A").GetValue(colorObj, null);
+                var r = (byte)t.GetProperty("R").GetValue(colorObj, null);
+                var g = (byte)t.GetProperty("G").GetValue(colorObj, null);
+                var b = (byte)t.GetProperty("B").GetValue(colorObj, null);
+                argb = (a << 24) | (r << 16) | (g << 8) | b;
+                return true;
             }
-            catch { }
-            return false;
+            catch { argb = 0; return false; }
         }
-        
+
         private List<ReportParameter> ExtractParameters()
         {
-            var parameters = new List<ReportParameter>();
-            
+            var list = new List<ReportParameter>();
             try
             {
-                if (_report.DataDefinition == null || _report.DataDefinition.ParameterFields == null)
-                    return parameters;
-                
                 foreach (ParameterFieldDefinition param in _report.DataDefinition.ParameterFields)
                 {
-                    // Skip system parameters
-                    if (param.Name != null && param.Name.StartsWith("?"))
-                        continue;
-                    
                     try
                     {
-                        var dataType = param.ValueType.ToString();
-                        
-                        parameters.Add(new ReportParameter
+                        var rp = new ReportParameter
                         {
-                            Name = param.Name ?? "Unknown",
-                            DataType = dataType ?? "Unknown",
-                            PromptText = param.PromptText ?? "",
-                            AllowMultipleValue = false,
-                            DefaultValue = ExtractParameterDefaultValue(param)
-                        });
+                            Name = param.Name,
+                            DataType = (GetProp(param, "ParameterValueType") ?? GetProp(param, "ValueType"))?.ToString(),
+                            PromptText = param.PromptText,
+                            AllowMultipleValue = param.EnableAllowMultipleValue
+                        };
+
+                        // Default value (try safe)
+                        rp.DefaultValue = ExtractParameterDefaultValue(param);
+
+                        list.Add(rp);
                     }
-                    catch (Exception ex)
+                    catch (Exception exParam)
                     {
-                        Console.WriteLine($"Error extracting parameter {param?.Name}: {ex.Message}");
+                        // Collect but continue
+                        Console.WriteLine($"Parameter '{param?.Name}': {exParam.Message}");
                     }
                 }
             }
@@ -495,49 +471,43 @@ namespace CrystalToSSRS.Converters
             {
                 Console.WriteLine($"Error extracting parameters: {ex.Message}");
             }
-            
-            return parameters;
+            return list;
         }
-        
+
         private object ExtractParameterDefaultValue(ParameterFieldDefinition param)
         {
             try
             {
-                if (param.HasCurrentValue && param.CurrentValues != null && param.CurrentValues.Count > 0)
+                if (param.DefaultValues != null && param.DefaultValues.Count > 0)
                 {
-                    return param.CurrentValues[0].ToString();
+                    var dv = param.DefaultValues[0];
+                    var valProp = dv.GetType().GetProperty("Value");
+                    return valProp != null ? valProp.GetValue(dv, null) : null;
                 }
             }
             catch { }
-            
             return null;
         }
-        
+
         private List<ReportFormula> ExtractFormulas()
         {
             var formulas = new List<ReportFormula>();
-            
             try
             {
-                if (_report.DataDefinition == null || _report.DataDefinition.FormulaFields == null)
-                    return formulas;
-                
-                foreach (FormulaFieldDefinition formula in _report.DataDefinition.FormulaFields)
+                foreach (FormulaFieldDefinition f in _report.DataDefinition.FormulaFields)
                 {
                     try
                     {
-                        var dataType = formula.ValueType.ToString();
-                        
                         formulas.Add(new ReportFormula
                         {
-                            Name = formula.Name ?? "Unknown",
-                            FormulaText = formula.Text ?? "",
-                            DataType = dataType
+                            Name = f.Name,
+                            FormulaText = f.Text,
+                            DataType = f.ValueType.ToString()
                         });
                     }
-                    catch (Exception ex)
+                    catch (Exception exF)
                     {
-                        Console.WriteLine($"Error extracting formula {formula?.Name}: {ex.Message}");
+                        Console.WriteLine($"Formula '{f?.Name}': {exF.Message}");
                     }
                 }
             }
@@ -545,56 +515,49 @@ namespace CrystalToSSRS.Converters
             {
                 Console.WriteLine($"Error extracting formulas: {ex.Message}");
             }
-            
             return formulas;
         }
-        
+
         private List<DatabaseTable> ExtractTables()
         {
             var tables = new List<DatabaseTable>();
-            
             try
             {
-                if (_report.Database == null || _report.Database.Tables == null || _report.Database.Tables.Count == 0)
-                    return tables;
-                
-                foreach (Table table in _report.Database.Tables)
+                foreach (Table t in _report.Database.Tables)
                 {
                     try
                     {
-                        var dbTable = new DatabaseTable
+                        var aliasObj = GetProp(t, "Alias");
+                        var tbl = new DatabaseTable
                         {
-                            Name = table.Name ?? "Unknown",
-                            Alias = table.Name ?? "Unknown"
+                            Name = t.Name,
+                            Alias = aliasObj != null ? aliasObj.ToString() : t.Name
                         };
                         
-                        if (table.Fields != null)
+                        // Fields
+                        foreach (FieldDefinition fd in t.Fields)
                         {
-                            foreach (DatabaseFieldDefinition field in table.Fields)
+                            int length = 0;
+                            var lenObj = GetProp(fd, "Length") ?? GetProp(fd, "Size");
+                            if (lenObj is int li) length = li;
+                            else if (lenObj != null)
                             {
-                                try
-                                {
-                                    var dataType = field.ValueType.ToString();
-                                    
-                                    dbTable.Fields.Add(new TableField
-                                    {
-                                        Name = field.Name ?? "Unknown",
-                                        DataType = dataType,
-                                        Length = 0
-                                    });
-                                }
-                                catch (Exception ex)
-                                {
-                                    Console.WriteLine($"Error extracting field {field?.Name}: {ex.Message}");
-                                }
+                                int parsed;
+                                if (int.TryParse(lenObj.ToString(), out parsed)) length = parsed;
                             }
+
+                            tbl.Fields.Add(new TableField
+                            {
+                                Name = fd.Name,
+                                DataType = fd.ValueType.ToString(),
+                                Length = length
+                            });
                         }
-                        
-                        tables.Add(dbTable);
+                        tables.Add(tbl);
                     }
-                    catch (Exception ex)
+                    catch (Exception exT)
                     {
-                        Console.WriteLine($"Error extracting table {table?.Name}: {ex.Message}");
+                        Console.WriteLine($"Table '{t?.Name}': {exT.Message}");
                     }
                 }
             }
@@ -602,48 +565,24 @@ namespace CrystalToSSRS.Converters
             {
                 Console.WriteLine($"Error extracting tables: {ex.Message}");
             }
-            
             return tables;
         }
-        
+
         private List<ReportField> ExtractFields()
         {
             var fields = new List<ReportField>();
-            
             try
             {
-                if (_report.Database == null || _report.Database.Tables == null)
-                    return fields;
-                
-                foreach (Table table in _report.Database.Tables)
+                foreach (Table t in _report.Database.Tables)
                 {
-                    try
+                    foreach (FieldDefinition fd in t.Fields)
                     {
-                        if (table.Fields != null)
+                        fields.Add(new ReportField
                         {
-                            foreach (DatabaseFieldDefinition field in table.Fields)
-                            {
-                                try
-                                {
-                                    var dataType = field.ValueType.ToString();
-                                    
-                                    fields.Add(new ReportField
-                                    {
-                                        Name = field.Name ?? "Unknown",
-                                        TableName = table.Name ?? "Unknown",
-                                        DataType = dataType
-                                    });
-                                }
-                                catch (Exception ex)
-                                {
-                                    Console.WriteLine($"Error adding field: {ex.Message}");
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error processing table {table?.Name}: {ex.Message}");
+                            Name = fd.Name,
+                            TableName = t.Name,
+                            DataType = fd.ValueType.ToString()
+                        });
                     }
                 }
             }
@@ -651,7 +590,6 @@ namespace CrystalToSSRS.Converters
             {
                 Console.WriteLine($"Error extracting fields: {ex.Message}");
             }
-            
             return fields;
         }
     }
