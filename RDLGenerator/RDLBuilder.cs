@@ -181,18 +181,25 @@ namespace CrystalToSSRS.RDLGenerator
 
             var query = CreateElement("Query");
             AppendElement(query, "DataSourceName", "DataSource1");
-            AppendElement(query, "CommandText", $"SELECT * FROM {table.Name}");
 
-            // Add QueryParameters from model parameters
-            if (_model.Parameters != null && _model.Parameters.Count > 0)
+            // Use real command text if available; else fallback
+            string baseSql = !string.IsNullOrWhiteSpace(table.CommandText) ? table.CommandText : $"SELECT * FROM {table.Name}";
+
+            // Convert parameters in SQL to Oracle style
+            var convResult = CrystalToSSRS.Utils.SqlParameterConverter.ConvertAndValidate(baseSql, _model.Parameters);
+            AppendElement(query, "CommandText", convResult.ConvertedSql);
+
+            // Add QueryParameters only for params actually referenced in SQL
+            if (convResult.SqlParams.Count > 0)
             {
                 var qps = CreateElement("QueryParameters");
-                foreach (var p in _model.Parameters)
+                foreach (var pName in convResult.SqlParams)
                 {
+                    // Find matching model param for datatype consistency (optional)
+                    var modelParam = _model.Parameters?.Find(p => p.Name.Equals(pName, System.StringComparison.OrdinalIgnoreCase));
                     var qp = CreateElement("QueryParameter");
-                    // Name must be a valid RDL identifier; do not include ':'
-                    qp.SetAttribute("Name", SanitizeName(p.Name));
-                    AppendElement(qp, "Value", $"=Parameters!{SanitizeName(p.Name)}.Value");
+                    qp.SetAttribute("Name", SanitizeName(pName));
+                    AppendElement(qp, "Value", $"=Parameters!{SanitizeName(pName)}.Value");
                     qps.AppendChild(qp);
                 }
                 query.AppendChild(qps);
@@ -212,14 +219,10 @@ namespace CrystalToSSRS.RDLGenerator
                 {
                     var fieldElement = CreateElement("Field");
                     fieldElement.SetAttribute("Name", SanitizeName(field.Name));
-
                     AppendElement(fieldElement, "DataField", field.Name);
-
-                    // rd:TypeName in correct namespace
                     var rdType = _xmlDoc.CreateElement("rd", "TypeName", RD_NAMESPACE);
                     rdType.InnerText = ConvertFieldClrType(field.DataType);
                     fieldElement.AppendChild(rdType);
-
                     fields.AppendChild(fieldElement);
                 }
             }

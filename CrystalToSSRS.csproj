@@ -58,6 +58,7 @@
   <ItemGroup>
     <Compile Include="Converters\CrystalReportParser.cs" />
     <Compile Include="Converters\FormulaToExpressionConverter.cs" />
+    <Compile Include="Licensing\LicenseManager.cs" />
     <Compile Include="Models\CrystalReportModel.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
@@ -79,6 +80,7 @@
     <Compile Include="UI\RdlPreviewForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Utils\SqlParameterConverter.cs" />
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
@@ -95,6 +97,7 @@
     <None Include="Directory.Build.props" />
     <None Include="FINAL_SUMMARY.md" />
     <None Include="IMPROVEMENTS.md" />
+    <None Include="license_keys.json" />
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>

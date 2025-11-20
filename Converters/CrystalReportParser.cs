@@ -533,7 +533,31 @@ namespace CrystalToSSRS.Converters
                             Name = t.Name,
                             Alias = aliasObj != null ? aliasObj.ToString() : t.Name
                         };
-                        
+
+                        // Try to extract Command/SQL text (for Command Tables)
+                        try
+                        {
+                            // Crystal command tables often expose Query or CommandText via DataSource or TableLogOnInfo/Properties
+                            // Use reflection to search common property names
+                            string sql = null;
+                            var props = new[] { "CommandText", "SqlString", "Query", "Text", "SelectCommand" };
+                            foreach (var pName in props)
+                            {
+                                var pVal = GetProp(t, pName);
+                                if (pVal is string s && !string.IsNullOrWhiteSpace(s)) { sql = s; break; }
+                            }
+                            // Fallback: try DataSource property
+                            if (sql == null)
+                            {
+                                var ds = GetProp(t, "DataSource");
+                                if (ds is string dsStr && dsStr.IndexOf("SELECT", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                                    sql = dsStr;
+                            }
+                            if (!string.IsNullOrWhiteSpace(sql))
+                                tbl.CommandText = sql;
+                        }
+                        catch { }
+
                         // Fields
                         foreach (FieldDefinition fd in t.Fields)
                         {

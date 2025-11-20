@@ -108,6 +108,8 @@ namespace CrystalToSSRS.Models
         public string Name { get; set; }
         public string Alias { get; set; }
         public List<TableField> Fields { get; set; }
+        // Full SQL text for Command / Query based tables (if available)
+        public string CommandText { get; set; }
         
         public DatabaseTable()
         {

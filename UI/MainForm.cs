@@ -95,8 +95,7 @@ namespace CrystalToSSRS.UI
         private void CreateMenuStrip()
         {
             menuStrip = new MenuStrip();
-            
-            // Dosya Menüsü
+    
             var fileMenu = new ToolStripMenuItem("&Dosya");
             fileMenu.DropDownItems.Add("&RPT Aç...", null, OnOpenRpt);
             fileMenu.DropDownItems.Add(new ToolStripSeparator());
@@ -104,8 +103,10 @@ namespace CrystalToSSRS.UI
             fileMenu.DropDownItems.Add("RDL &Önizleme", null, OnPreviewRdl);
             fileMenu.DropDownItems.Add(new ToolStripSeparator());
             fileMenu.DropDownItems.Add("Çı&kış", null, (s, e) => Application.Exit());
-            
-            // Görünüm Menüsü
+
+            var licenseMenu = new ToolStripMenuItem("&Lisans");
+            licenseMenu.DropDownItems.Add("&Aktivasyon", null, (s, e) => CrystalToSSRS.Licensing.LicenseManager.ShowActivationDialog(this));
+
             var viewMenu = new ToolStripMenuItem("&Görünüm");
             viewMenu.DropDownItems.Add("&Cetvelleri Göster/Gizle", null, OnToggleRulers);
             viewMenu.DropDownItems.Add("&Grid Göster/Gizle", null, OnToggleGrid);
@@ -113,14 +114,13 @@ namespace CrystalToSSRS.UI
             viewMenu.DropDownItems.Add("&Milimetre", null, (s, e) => SetUnit(MeasurementUnit.Millimeter));
             viewMenu.DropDownItems.Add("&İnch", null, (s, e) => SetUnit(MeasurementUnit.Inch));
             viewMenu.DropDownItems.Add("&Piksel", null, (s, e) => SetUnit(MeasurementUnit.Pixel));
-            
-            // Araçlar Menüsü
+
             var toolsMenu = new ToolStripMenuItem("&Araçlar");
             toolsMenu.DropDownItems.Add("&Formül Dönüştürücü", null, OnFormulaConverter);
             toolsMenu.DropDownItems.Add("&Veri Kaynağı Ayarları", null, OnDataSourceSettings);
             toolsMenu.DropDownItems.Add("&Toplu Validasyon", null, OnBatchValidation);
-            
-            menuStrip.Items.AddRange(new ToolStripItem[] { fileMenu, viewMenu, toolsMenu });
+
+            menuStrip.Items.AddRange(new ToolStripItem[] { fileMenu, viewMenu, toolsMenu, licenseMenu });
             this.MainMenuStrip = menuStrip;
             this.Controls.Add(menuStrip);
         }
@@ -326,37 +326,35 @@ namespace CrystalToSSRS.UI
         
         private async System.Threading.Tasks.Task LoadRptFileAsync(string filePath)
         {
+            // License check before conversion attempt
+            if (!CrystalToSSRS.Licensing.LicenseManager.AllowAnotherConversion())
+            {
+                MessageBox.Show("Lisans gerekli: Ücretsiz dönüşüm hakkınız tükendi.", "Lisans", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                CrystalToSSRS.Licensing.LicenseManager.ShowActivationDialog(this);
+                if (!CrystalToSSRS.Licensing.LicenseManager.AllowAnotherConversion())
+                    return;
+            }
             try
             {
                 SetBusy(true, "Rapor yükleniyor...");
-                
                 _currentRptPath = filePath;
-                // Parse on background thread
                 _currentModel = await System.Threading.Tasks.Task.Run(() => _parser.ParseReport(filePath));
-
-                // Ensure ConnectionInfo exists to avoid null in UI
                 if (_currentModel.ConnectionInfo == null)
                     _currentModel.ConnectionInfo = new OracleConnectionInfo();
-                
-                // Skip UI population if fatal error occurred
                 if (_currentModel.ParseErrors != null && _currentModel.ParseErrors.Exists(e => e != null && e.StartsWith("Fatal", System.StringComparison.OrdinalIgnoreCase)))
                 {
                     var msg = string.Join("\n", _currentModel.ParseErrors);
                     MessageBox.Show("RPT yüklenemedi:\n\n" + msg, "Hata", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
-                
                 PopulateTreeView();
                 DrawDesignView();
-                
-                // Hata özeti (fatal olmayanlar)
                 if (_currentModel.ParseErrors != null && _currentModel.ParseErrors.Count > 0)
                 {
                     var msg = string.Join("\n", _currentModel.ParseErrors);
                     MessageBox.Show("RPT okunurken bazı kayıtlar atlandı veya hata oluştu:\n\n" + msg,
                         "Uyarı", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
-                
                 lblStatus.Text = $"Rapor yüklendi: {Path.GetFileName(filePath)}";
                 MessageBox.Show($"Rapor başarıyla yüklendi!\n\n" +
                     $"Sections: {_currentModel.Sections.Count}\n" +
@@ -364,6 +362,8 @@ namespace CrystalToSSRS.UI
                     $"Formulas: {_currentModel.Formulas.Count}\n" +
                     $"Tables: {_currentModel.Tables.Count}",
                     "Bilgi", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                // Count as a conversion only when successful
+                CrystalToSSRS.Licensing.LicenseManager.IncrementConversion();
             }
             catch (System.Exception ex)
             {
